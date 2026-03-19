@@ -11,7 +11,9 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:5001',
         changeOrigin: true,
-        secure: false
+        secure: false,
+        timeout: 600000,
+        proxyTimeout: 600000
       }
     }
   }

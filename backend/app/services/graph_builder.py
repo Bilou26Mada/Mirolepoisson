@@ -47,6 +47,9 @@ class GraphBuilderService:
         if not self.api_key:
             raise ValueError("ZEP_API_KEY 未配置")
         
+        # DEBUG PRINT
+        print(f"[DEBUG] Using ZEP_API_KEY: {self.api_key[:10]}...{self.api_key[-5:] if len(self.api_key) > 5 else ''}")
+        
         self.client = Zep(api_key=self.api_key)
         self.task_manager = TaskManager()
     

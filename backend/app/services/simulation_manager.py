@@ -295,10 +295,8 @@ class SimulationManager:
                 )
             
             if filtered.filtered_count == 0:
-                state.status = SimulationStatus.FAILED
-                state.error = "没有找到符合条件的实体，请检查图谱是否正确构建"
-                self._save_simulation_state(state)
-                return state
+                logger.info("No entities found in graph, using default virtual agents.")
+                # We don't return here, we proceed to stage 2 which will now handle empty entities
             
             # ========== 阶段2: 生成Agent Profile ==========
             total_entities = len(filtered.entities)

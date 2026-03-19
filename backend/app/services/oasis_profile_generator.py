@@ -11,6 +11,8 @@ OASIS Agent Profile生成器
 import json
 import random
 import time
+import csv
+import concurrent.futures
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -64,7 +66,9 @@ class OasisAgentProfile:
             "username": self.user_name,  # OASIS 库要求字段名为 username（无下划线）
             "name": self.name,
             "bio": self.bio,
+            "description": self.bio,
             "persona": self.persona,
+            "user_char": self.persona,
             "karma": self.karma,
             "created_at": self.created_at,
         }
@@ -92,7 +96,9 @@ class OasisAgentProfile:
             "username": self.user_name,  # OASIS 库要求字段名为 username（无下划线）
             "name": self.name,
             "bio": self.bio,
+            "description": self.bio,  # zep_tools.py expects 'description'
             "persona": self.persona,
+            "user_char": self.persona,  # OASIS library expects 'user_char'
             "friend_count": self.friend_count,
             "follower_count": self.follower_count,
             "statuses_count": self.statuses_count,
@@ -207,6 +213,134 @@ class OasisProfileGenerator:
                 self.zep_client = Zep(api_key=self.zep_api_key)
             except Exception as e:
                 logger.warning(f"Zep客户端初始化失败: {e}")
+
+    def generate_default_profiles(
+        self,
+        count: int = 3,
+        realtime_output_path: Optional[str] = None,
+        output_platform: str = "reddit"
+    ) -> List[OasisAgentProfile]:
+        """
+        当图谱为空时，生成默认的Agent人设
+        """
+        logger.info(f"生成 {count} 个默认人设...")
+        profiles = []
+        
+        default_names = [
+            ("Analyste_Expert", "Expert Analyst with 15 years of experience in market microstructure and ICT concepts."),
+            ("Trader_Retail", "Aggressive retail trader focusing on ORB breakouts and liquidity sweeps."),
+            ("Observateur_IA", "AI-driven market observer analyzing sentiment and high-impact macro events."),
+            ("Scalper_Pro", "Professional scalper looking for fvg gaps and order block reversals."),
+            ("Macro_Watcher", "Macro-economist focusing on CPI, FOMC and high-impact news delivery.")
+        ]
+        
+        for i in range(min(count, len(default_names))):
+            name, bio = default_names[i]
+            user_name = self._generate_username(name)
+            
+            profile = OasisAgentProfile(
+                user_id=1000 + i,
+                user_name=user_name,
+                name=name,
+                bio=bio,
+                persona=f"{name} is a virtual agent created to analyze the provided data context. {bio}",
+                karma=random.randint(1000, 5000),
+                friend_count=random.randint(100, 300),
+                follower_count=random.randint(200, 1000),
+                statuses_count=random.randint(500, 2000),
+                age=random.randint(25, 55),
+                gender=random.choice(["male", "female"]),
+                mbti=random.choice(self.MBTI_TYPES),
+                country="France",
+                profession=name.split('_')[0],
+                interested_topics=["Trading", "Markets", "Economics"]
+            )
+            profiles.append(profile)
+            
+        return profiles
+
+    def generate_profiles_from_entities(
+        self,
+        entities: List[EntityNode],
+        use_llm: bool = True,
+        progress_callback: Optional[callable] = None,
+        graph_id: Optional[str] = None,
+        parallel_count: int = 3,
+        realtime_output_path: Optional[str] = None,
+        output_platform: str = "reddit"
+    ) -> List[OasisAgentProfile]:
+        """
+        批量从实体生成Agent Profile
+        
+        Args:
+            entities: 实体列表
+            use_llm: 是否使用LLM生成详细人设
+            progress_callback: 进度回调 (current, total, message)
+            graph_id: Zep图谱ID（用于检索）
+            parallel_count: 并行处理数量
+            realtime_output_path: 实时保存路径
+            output_platform: 输出平台类型
+            
+        Returns:
+            List[OasisAgentProfile]
+        """
+        # 设置graph_id以启用Zep检索功能
+        if graph_id:
+            self.graph_id = graph_id
+            
+        profiles = []
+        total = len(entities)
+        
+        if total == 0:
+            logger.info("图谱中无实体，生成默认推荐人设...")
+            return self.generate_default_profiles(count=5, output_platform=output_platform)
+
+        logger.info(f"开始批量生成人设: count={total}, use_llm={use_llm}, parallel={parallel_count}")
+
+        # 准备并行处理
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_count) as executor:
+            # 提交生成任务
+            # ID从1000开始，递增
+            future_to_entity = {
+                executor.submit(self.generate_profile_from_entity, entity, 1000 + i, use_llm): (i, entity)
+                for i, entity in enumerate(entities)
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_entity):
+                idx, entity = future_to_entity[future]
+                try:
+                    profile = future.result()
+                    profiles.append(profile)
+                    
+                    # 进度更新
+                    if progress_callback:
+                        progress_callback(len(profiles), total, f"{entity.name}")
+                    
+                    # 实时保存，确保即便中断也能保留已生成的数据
+                    if realtime_output_path:
+                        self.save_profiles(profiles, realtime_output_path, output_platform)
+                        
+                except Exception as e:
+                    logger.error(f"生成 {entity.name} 的人设时发生意料之外的错误: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    
+                    # 失败时降级为规则生成，确保模拟能继续
+                    try:
+                        fallback_profile = self.generate_profile_from_entity(entity, 1000 + idx, use_llm=False)
+                        profiles.append(fallback_profile)
+                    except:
+                        pass
+        
+        # 按ID排序保持稳定性
+        profiles.sort(key=lambda x: x.user_id)
+        
+        # 最终保存一次
+        if realtime_output_path:
+            self.save_profiles(profiles, realtime_output_path, output_platform)
+            
+        logger.info(f"批量生成完成: 成功 {len(profiles)}/{total}")
+        return profiles
     
     def generate_profile_from_entity(
         self, 
@@ -519,7 +653,6 @@ class OasisProfileGenerator:
             prompt = self._build_group_persona_prompt(
                 entity_name, entity_type, entity_summary, entity_attributes, context
             )
-
         # 尝试多次生成，直到成功或达到最大重试次数
         max_attempts = 3
         last_error = None
@@ -715,8 +848,8 @@ class OasisProfileGenerator:
 8. interested_topics: 感兴趣话题数组
 
 重要:
-- 所有字段值必须是字符串或数字，不要使用换行符
-- persona必须是一段连贯的文字描述
+- 所有字段值必须是字符串 or 数字，不要使用换行符
+- persona 必须是一段连贯的文字描述
 - 使用中文（除了gender字段必须用英文male/female）
 - 内容要与实体信息保持一致
 - age必须是有效的整数，gender必须是"male"或"female"
@@ -764,7 +897,7 @@ class OasisProfileGenerator:
 8. interested_topics: 关注领域数组
 
 重要:
-- 所有字段值必须是字符串或数字，不允许null值
+- 所有字段值必须是字符串 or 数字，不允许null值
 - persona必须是一段连贯的文字描述，不要使用换行符
 - 使用中文（除了gender字段必须用英文"other"）
 - age必须是整数30，gender必须是字符串"other"
@@ -798,247 +931,25 @@ class OasisProfileGenerator:
             return {
                 "bio": f"Expert and thought leader in their field.",
                 "persona": f"{entity_name} is a recognized {entity_type.lower()} who shares insights and opinions on important matters. They are known for their expertise and influence in public discourse.",
-                "age": random.randint(35, 60),
-                "gender": random.choice(["male", "female"]),
-                "mbti": random.choice(["ENTJ", "INTJ", "ENTP", "INTP"]),
-                "country": random.choice(self.COUNTRIES),
-                "profession": entity_attributes.get("occupation", "Expert"),
-                "interested_topics": ["Politics", "Economics", "Culture & Society"],
-            }
-        
-        elif entity_type_lower in ["mediaoutlet", "socialmediaplatform"]:
-            return {
-                "bio": f"Official account for {entity_name}. News and updates.",
-                "persona": f"{entity_name} is a media entity that reports news and facilitates public discourse. The account shares timely updates and engages with the audience on current events.",
-                "age": 30,  # 机构虚拟年龄
-                "gender": "other",  # 机构使用other
-                "mbti": "ISTJ",  # 机构风格：严谨保守
-                "country": "中国",
-                "profession": "Media",
-                "interested_topics": ["General News", "Current Events", "Public Affairs"],
-            }
-        
-        elif entity_type_lower in ["university", "governmentagency", "ngo", "organization"]:
-            return {
-                "bio": f"Official account of {entity_name}.",
-                "persona": f"{entity_name} is an institutional entity that communicates official positions, announcements, and engages with stakeholders on relevant matters.",
-                "age": 30,  # 机构虚拟年龄
-                "gender": "other",  # 机构使用other
-                "mbti": "ISTJ",  # 机构风格：严谨保守
-                "country": "中国",
-                "profession": entity_type,
-                "interested_topics": ["Public Policy", "Community", "Official Announcements"],
-            }
-        
-        else:
-            # 默认人设
-            return {
-                "bio": entity_summary[:150] if entity_summary else f"{entity_type}: {entity_name}",
-                "persona": entity_summary or f"{entity_name} is a {entity_type.lower()} participating in social discussions.",
-                "age": random.randint(25, 50),
+                "age": random.randint(35, 65),
                 "gender": random.choice(["male", "female"]),
                 "mbti": random.choice(self.MBTI_TYPES),
                 "country": random.choice(self.COUNTRIES),
                 "profession": entity_type,
-                "interested_topics": ["General", "Social Issues"],
+                "interested_topics": ["News", "Policy", "Science"],
             }
-    
-    def set_graph_id(self, graph_id: str):
-        """设置图谱ID用于Zep检索"""
-        self.graph_id = graph_id
-    
-    def generate_profiles_from_entities(
-        self,
-        entities: List[EntityNode],
-        use_llm: bool = True,
-        progress_callback: Optional[callable] = None,
-        graph_id: Optional[str] = None,
-        parallel_count: int = 5,
-        realtime_output_path: Optional[str] = None,
-        output_platform: str = "reddit"
-    ) -> List[OasisAgentProfile]:
-        """
-        批量从实体生成Agent Profile（支持并行生成）
         
-        Args:
-            entities: 实体列表
-            use_llm: 是否使用LLM生成详细人设
-            progress_callback: 进度回调函数 (current, total, message)
-            graph_id: 图谱ID，用于Zep检索获取更丰富上下文
-            parallel_count: 并行生成数量，默认5
-            realtime_output_path: 实时写入的文件路径（如果提供，每生成一个就写入一次）
-            output_platform: 输出平台格式 ("reddit" 或 "twitter")
-            
-        Returns:
-            Agent Profile列表
-        """
-        import concurrent.futures
-        from threading import Lock
-        
-        # 设置graph_id用于Zep检索
-        if graph_id:
-            self.graph_id = graph_id
-        
-        total = len(entities)
-        profiles = [None] * total  # 预分配列表保持顺序
-        completed_count = [0]  # 使用列表以便在闭包中修改
-        lock = Lock()
-        
-        # 实时写入文件的辅助函数
-        def save_profiles_realtime():
-            """实时保存已生成的 profiles 到文件"""
-            if not realtime_output_path:
-                return
-            
-            with lock:
-                # 过滤出已生成的 profiles
-                existing_profiles = [p for p in profiles if p is not None]
-                if not existing_profiles:
-                    return
-                
-                try:
-                    if output_platform == "reddit":
-                        # Reddit JSON 格式
-                        profiles_data = [p.to_reddit_format() for p in existing_profiles]
-                        with open(realtime_output_path, 'w', encoding='utf-8') as f:
-                            json.dump(profiles_data, f, ensure_ascii=False, indent=2)
-                    else:
-                        # Twitter CSV 格式
-                        import csv
-                        profiles_data = [p.to_twitter_format() for p in existing_profiles]
-                        if profiles_data:
-                            fieldnames = list(profiles_data[0].keys())
-                            with open(realtime_output_path, 'w', encoding='utf-8', newline='') as f:
-                                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                                writer.writeheader()
-                                writer.writerows(profiles_data)
-                except Exception as e:
-                    logger.warning(f"实时保存 profiles 失败: {e}")
-        
-        def generate_single_profile(idx: int, entity: EntityNode) -> tuple:
-            """生成单个profile的工作函数"""
-            entity_type = entity.get_entity_type() or "Entity"
-            
-            try:
-                profile = self.generate_profile_from_entity(
-                    entity=entity,
-                    user_id=idx,
-                    use_llm=use_llm
-                )
-                
-                # 实时输出生成的人设到控制台和日志
-                self._print_generated_profile(entity.name, entity_type, profile)
-                
-                return idx, profile, None
-                
-            except Exception as e:
-                logger.error(f"生成实体 {entity.name} 的人设失败: {str(e)}")
-                # 创建一个基础profile
-                fallback_profile = OasisAgentProfile(
-                    user_id=idx,
-                    user_name=self._generate_username(entity.name),
-                    name=entity.name,
-                    bio=f"{entity_type}: {entity.name}",
-                    persona=entity.summary or f"A participant in social discussions.",
-                    source_entity_uuid=entity.uuid,
-                    source_entity_type=entity_type,
-                )
-                return idx, fallback_profile, str(e)
-        
-        logger.info(f"开始并行生成 {total} 个Agent人设（并行数: {parallel_count}）...")
-        print(f"\n{'='*60}")
-        print(f"开始生成Agent人设 - 共 {total} 个实体，并行数: {parallel_count}")
-        print(f"{'='*60}\n")
-        
-        # 使用线程池并行执行
-        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_count) as executor:
-            # 提交所有任务
-            future_to_entity = {
-                executor.submit(generate_single_profile, idx, entity): (idx, entity)
-                for idx, entity in enumerate(entities)
-            }
-            
-            # 收集结果
-            for future in concurrent.futures.as_completed(future_to_entity):
-                idx, entity = future_to_entity[future]
-                entity_type = entity.get_entity_type() or "Entity"
-                
-                try:
-                    result_idx, profile, error = future.result()
-                    profiles[result_idx] = profile
-                    
-                    with lock:
-                        completed_count[0] += 1
-                        current = completed_count[0]
-                    
-                    # 实时写入文件
-                    save_profiles_realtime()
-                    
-                    if progress_callback:
-                        progress_callback(
-                            current, 
-                            total, 
-                            f"已完成 {current}/{total}: {entity.name}（{entity_type}）"
-                        )
-                    
-                    if error:
-                        logger.warning(f"[{current}/{total}] {entity.name} 使用备用人设: {error}")
-                    else:
-                        logger.info(f"[{current}/{total}] 成功生成人设: {entity.name} ({entity_type})")
-                        
-                except Exception as e:
-                    logger.error(f"处理实体 {entity.name} 时发生异常: {str(e)}")
-                    with lock:
-                        completed_count[0] += 1
-                    profiles[idx] = OasisAgentProfile(
-                        user_id=idx,
-                        user_name=self._generate_username(entity.name),
-                        name=entity.name,
-                        bio=f"{entity_type}: {entity.name}",
-                        persona=entity.summary or "A participant in social discussions.",
-                        source_entity_uuid=entity.uuid,
-                        source_entity_type=entity_type,
-                    )
-                    # 实时写入文件（即使是备用人设）
-                    save_profiles_realtime()
-        
-        print(f"\n{'='*60}")
-        print(f"人设生成完成！共生成 {len([p for p in profiles if p])} 个Agent")
-        print(f"{'='*60}\n")
-        
-        return profiles
-    
-    def _print_generated_profile(self, entity_name: str, entity_type: str, profile: OasisAgentProfile):
-        """实时输出生成的人设到控制台（完整内容，不截断）"""
-        separator = "-" * 70
-        
-        # 构建完整输出内容（不截断）
-        topics_str = ', '.join(profile.interested_topics) if profile.interested_topics else '无'
-        
-        output_lines = [
-            f"\n{separator}",
-            f"[已生成] {entity_name} ({entity_type})",
-            f"{separator}",
-            f"用户名: {profile.user_name}",
-            f"",
-            f"【简介】",
-            f"{profile.bio}",
-            f"",
-            f"【详细人设】",
-            f"{profile.persona}",
-            f"",
-            f"【基本属性】",
-            f"年龄: {profile.age} | 性别: {profile.gender} | MBTI: {profile.mbti}",
-            f"职业: {profile.profession} | 国家: {profile.country}",
-            f"兴趣话题: {topics_str}",
-            separator
-        ]
-        
-        output = "\n".join(output_lines)
-        
-        # 只输出到控制台（避免重复，logger不再输出完整内容）
-        print(output)
-    
+        return {
+            "bio": f"{entity_type}: {entity_name}",
+            "persona": f"{entity_name} is a {entity_type} represented in the analysis. They have various attributes and relationships that contribute to the overall context.",
+            "age": random.randint(20, 60),
+            "gender": random.choice(["male", "female", "other"]),
+            "mbti": random.choice(self.MBTI_TYPES),
+            "country": random.choice(self.COUNTRIES),
+            "profession": entity_type,
+            "interested_topics": ["General"],
+        }
+
     def save_profiles(
         self,
         profiles: List[OasisAgentProfile],
@@ -1046,155 +957,58 @@ class OasisProfileGenerator:
         platform: str = "reddit"
     ):
         """
-        保存Profile到文件（根据平台选择正确格式）
-        
-        OASIS平台格式要求：
-        - Twitter: CSV格式
-        - Reddit: JSON格式
+        保存生成的Profile到文件
         
         Args:
             profiles: Profile列表
-            file_path: 文件路径
-            platform: 平台类型 ("reddit" 或 "twitter")
+            file_path: 保存路径
+            platform: 平台类型 (reddit/twitter)
         """
-        if platform == "twitter":
-            self._save_twitter_csv(profiles, file_path)
-        else:
-            self._save_reddit_json(profiles, file_path)
-    
-    def _save_twitter_csv(self, profiles: List[OasisAgentProfile], file_path: str):
-        """
-        保存Twitter Profile为CSV格式（符合OASIS官方要求）
-        
-        OASIS Twitter要求的CSV字段：
-        - user_id: 用户ID（根据CSV顺序从0开始）
-        - name: 用户真实姓名
-        - username: 系统中的用户名
-        - user_char: 详细人设描述（注入到LLM系统提示中，指导Agent行为）
-        - description: 简短的公开简介（显示在用户资料页面）
-        
-        user_char vs description 区别：
-        - user_char: 内部使用，LLM系统提示，决定Agent如何思考和行动
-        - description: 外部显示，其他用户可见的简介
-        """
-        import csv
-        
-        # 确保文件扩展名是.csv
-        if not file_path.endswith('.csv'):
-            file_path = file_path.replace('.json', '.csv')
-        
-        with open(file_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            
-            # 写入OASIS要求的表头
-            headers = ['user_id', 'name', 'username', 'user_char', 'description']
-            writer.writerow(headers)
-            
-            # 写入数据行
-            for idx, profile in enumerate(profiles):
-                # user_char: 完整人设（bio + persona），用于LLM系统提示
-                user_char = profile.bio
-                if profile.persona and profile.persona != profile.bio:
-                    user_char = f"{profile.bio} {profile.persona}"
-                # 处理换行符（CSV中用空格替代）
-                user_char = user_char.replace('\n', ' ').replace('\r', ' ')
-                
-                # description: 简短简介，用于外部显示
-                description = profile.bio.replace('\n', ' ').replace('\r', ' ')
-                
-                row = [
-                    idx,                    # user_id: 从0开始的顺序ID
-                    profile.name,           # name: 真实姓名
-                    profile.user_name,      # username: 用户名
-                    user_char,              # user_char: 完整人设（内部LLM使用）
-                    description             # description: 简短简介（外部显示）
-                ]
-                writer.writerow(row)
-        
-        logger.info(f"已保存 {len(profiles)} 个Twitter Profile到 {file_path} (OASIS CSV格式)")
-    
-    def _normalize_gender(self, gender: Optional[str]) -> str:
-        """
-        标准化gender字段为OASIS要求的英文格式
-        
-        OASIS要求: male, female, other
-        """
-        if not gender:
-            return "other"
-        
-        gender_lower = gender.lower().strip()
-        
-        # 中文映射
-        gender_map = {
-            "男": "male",
-            "女": "female",
-            "机构": "other",
-            "其他": "other",
-            # 英文已有
-            "male": "male",
-            "female": "female",
-            "other": "other",
-        }
-        
-        return gender_map.get(gender_lower, "other")
-    
-    def _save_reddit_json(self, profiles: List[OasisAgentProfile], file_path: str):
-        """
-        保存Reddit Profile为JSON格式
-        
-        使用与 to_reddit_format() 一致的格式，确保 OASIS 能正确读取。
-        必须包含 user_id 字段，这是 OASIS agent_graph.get_agent() 匹配的关键！
-        
-        必需字段：
-        - user_id: 用户ID（整数，用于匹配 initial_posts 中的 poster_agent_id）
-        - username: 用户名
-        - name: 显示名称
-        - bio: 简介
-        - persona: 详细人设
-        - age: 年龄（整数）
-        - gender: "male", "female", 或 "other"
-        - mbti: MBTI类型
-        - country: 国家
-        """
-        data = []
-        for idx, profile in enumerate(profiles):
-            # 使用与 to_reddit_format() 一致的格式
-            item = {
-                "user_id": profile.user_id if profile.user_id is not None else idx,  # 关键：必须包含 user_id
-                "username": profile.user_name,
-                "name": profile.name,
-                "bio": profile.bio[:150] if profile.bio else f"{profile.name}",
-                "persona": profile.persona or f"{profile.name} is a participant in social discussions.",
-                "karma": profile.karma if profile.karma else 1000,
-                "created_at": profile.created_at,
-                # OASIS必需字段 - 确保都有默认值
-                "age": profile.age if profile.age else 30,
-                "gender": self._normalize_gender(profile.gender),
-                "mbti": profile.mbti if profile.mbti else "ISTJ",
-                "country": profile.country if profile.country else "中国",
-            }
-            
-            # 可选字段
-            if profile.profession:
-                item["profession"] = profile.profession
-            if profile.interested_topics:
-                item["interested_topics"] = profile.interested_topics
-            
-            data.append(item)
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"已保存 {len(profiles)} 个Reddit Profile到 {file_path} (JSON格式，包含user_id字段)")
-    
-    # 保留旧方法名作为别名，保持向后兼容
-    def save_profiles_to_json(
-        self,
-        profiles: List[OasisAgentProfile],
-        file_path: str,
-        platform: str = "reddit"
-    ):
-        """[已废弃] 请使用 save_profiles() 方法"""
-        logger.warning("save_profiles_to_json已废弃，请使用save_profiles方法")
-        self.save_profiles(profiles, file_path, platform)
+        if not profiles:
+            logger.warning("没有Profile可保存")
+            return
 
+        try:
+            # 确保目录存在
+            import os
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            if platform == "reddit":
+                # Reddit 使用 JSON 格式 (包含完整的 profile 对象)
+                data = [p.to_reddit_format() for p in profiles]
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                logger.info(f"已保存 {len(profiles)} 个 Reddit Profile 到 {file_path}")
+                
+            elif platform == "twitter":
+                # Twitter 必须使用 CSV 格式，这是 OASIS 原生运行脚本的要求
+                fieldnames = [
+                    "user_id", "username", "name", "bio", "description", 
+                    "persona", "user_char",
+                    "friend_count", "follower_count", "statuses_count", "created_at",
+                    "age", "gender", "mbti", "country", "profession", "interested_topics"
+                ]
+                
+                with open(file_path, 'w', encoding='utf-8', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for p in profiles:
+                        data = p.to_twitter_format()
+                        # interested_topics 在 CSV 中需要转换为字符串
+                        if isinstance(data.get("interested_topics"), list):
+                            data["interested_topics"] = ",".join(data["interested_topics"])
+                        writer.writerow(data)
+                
+                logger.info(f"已保存 {len(profiles)} 个 Twitter Profile 到 {file_path}")
+                
+            else:
+                # 默认 JSON 导出（完整格式）
+                data = [p.to_dict() for p in profiles]
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                logger.info(f"已保存 {len(profiles)} 个 Profile 到 {file_path}")
+                
+        except Exception as e:
+            logger.error(f"保存Profile失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())

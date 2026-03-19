@@ -58,7 +58,7 @@ class LLMClient:
             "max_tokens": max_tokens,
         }
         
-        if response_format:
+        if response_format and response_format.get("type") == "json_object":
             kwargs["response_format"] = response_format
         
         response = self.client.chat.completions.create(**kwargs)
@@ -99,5 +99,11 @@ class LLMClient:
         try:
             return json.loads(cleaned_response)
         except json.JSONDecodeError:
+            # 如果解析失败，可能是因为模型输出了多余内容，尝试使用正则提取
+            json_match = re.search(r'\{[\s\S]*\}', cleaned_response)
+            if json_match:
+                try:
+                    return json.loads(json_match.group())
+                except:
+                    pass
             raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}")
-

@@ -15,7 +15,7 @@
             :class="{ active: viewMode === mode }"
             @click="viewMode = mode"
           >
-            {{ { graph: '图谱', split: '双栏', workbench: '工作台' }[mode] }}
+            {{ { graph: 'Graphe', split: 'Double Colonne', workbench: 'Plan de travail' }[mode] }}
           </button>
         </div>
       </div>
@@ -23,7 +23,7 @@
       <div class="header-right">
         <div class="workflow-step">
           <span class="step-num">Step 4/5</span>
-          <span class="step-name">报告生成</span>
+          <span class="step-name">Génération du rapport</span>
         </div>
         <div class="step-divider"></div>
         <span class="status-indicator" :class="statusClass">
@@ -47,7 +47,7 @@
         />
       </div>
 
-      <!-- Right Panel: Step4 报告生成 -->
+      <!-- Panneau de droite : Génération du rapport Step4 -->
       <div class="panel-wrapper right" :style="rightPanelStyle">
         <Step4Report
           :reportId="currentReportId"
@@ -78,7 +78,7 @@ const props = defineProps({
   reportId: String
 })
 
-// Layout State - 默认切换到工作台视角
+// État de la mise en page - Passage par défaut à la vue Plan de travail
 const viewMode = ref('workbench')
 
 // Data State
@@ -109,9 +109,9 @@ const statusClass = computed(() => {
 })
 
 const statusText = computed(() => {
-  if (currentStatus.value === 'error') return 'Error'
-  if (currentStatus.value === 'completed') return 'Completed'
-  return 'Generating'
+  if (currentStatus.value === 'error') return 'Erreur'
+  if (currentStatus.value === 'completed') return 'Terminé'
+  return 'Génération...'
 })
 
 // --- Helpers ---
@@ -139,9 +139,9 @@ const toggleMaximize = (target) => {
 // --- Data Logic ---
 const loadReportData = async () => {
   try {
-    addLog(`加载报告数据: ${currentReportId.value}`)
+    addLog(`Chargement des données du rapport : ${currentReportId.value}`)
     
-    // 获取 report 信息以获取 simulation_id
+    // Obtenir les informations du rapport pour récupérer simulation_id
     const reportRes = await getReport(currentReportId.value)
     if (reportRes.success && reportRes.data) {
       const reportData = reportRes.data
@@ -158,7 +158,7 @@ const loadReportData = async () => {
             const projRes = await getProject(simData.project_id)
             if (projRes.success && projRes.data) {
               projectData.value = projRes.data
-              addLog(`项目加载成功: ${projRes.data.project_id}`)
+              addLog(`Projet chargé avec succès : ${projRes.data.project_id}`)
               
               // 获取 graph 数据
               if (projRes.data.graph_id) {
@@ -169,10 +169,10 @@ const loadReportData = async () => {
         }
       }
     } else {
-      addLog(`获取报告信息失败: ${reportRes.error || '未知错误'}`)
+      addLog(`Échec de l'obtention des informations du rapport : ${reportRes.error || 'Erreur inconnue'}`)
     }
   } catch (err) {
-    addLog(`加载异常: ${err.message}`)
+    addLog(`Exception lors du chargement : ${err.message}`)
   }
 }
 
@@ -183,10 +183,10 @@ const loadGraph = async (graphId) => {
     const res = await getGraphData(graphId)
     if (res.success) {
       graphData.value = res.data
-      addLog('图谱数据加载成功')
+      addLog('Données du graphe chargées avec succès')
     }
   } catch (err) {
-    addLog(`图谱加载失败: ${err.message}`)
+    addLog(`Échec du chargement du graphe : ${err.message}`)
   } finally {
     graphLoading.value = false
   }
@@ -207,7 +207,7 @@ watch(() => route.params.reportId, (newId) => {
 }, { immediate: true })
 
 onMounted(() => {
-  addLog('ReportView 初始化')
+  addLog('Initialisation de ReportView')
   loadReportData()
 })
 </script>
